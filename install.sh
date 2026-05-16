@@ -5,7 +5,22 @@
 #  Installs into /opt/CodePress  (Linux)
 #              or /usr/local/CodePress (macOS)
 #  Supports:  CodePress --delete
+#
+#  Self-bootstrapping: if piped via curl|bash, downloads itself
+#  to a temp file and re-executes so sudo prompts work.
 # ------------------------------------------------------------
+
+# ── Self-bootstrap: if piped, download and re-run ────────────────────────
+if [[ "${BASH_SOURCE[0]}" == "bash" ]] || [[ ! -f "${BASH_SOURCE[0]}" ]]; then
+    SCRIPT=$(mktemp /tmp/codepress-install.XXXXXX.sh)
+    curl -fsSL https://raw.githubusercontent.com/chirayu-khandelwal/CodePress/main/install.sh -o "$SCRIPT"
+    chmod +x "$SCRIPT"
+    bash "$SCRIPT" "$@"
+    EXIT=$?
+    rm -f "$SCRIPT"
+    exit $EXIT
+fi
+
 set -euo pipefail
 
 GREEN='\033[1;32m'
