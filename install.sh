@@ -34,7 +34,7 @@ else
 fi
 
 # Download latest CodePress.py
-curl -fsSL https://raw.githubusercontent.com/lightshadow03/CodePress/main/CodePress.py \
+curl -fsSL https://raw.githubusercontent.com/chirayu-khandelwal/CodePress/main/CodePress.py \
      -o "${INSTALL_DIR}/CodePress.py"
 chmod 644 "${INSTALL_DIR}/CodePress.py"
 
