@@ -43,7 +43,7 @@ echo -e "${GREEN}🔧 Installing CodePress to ${INSTALL_DIR}${RESET}"
 # Ensure we have privileges to write to INSTALL_DIR
 if [[ ! -w "$(dirname "$INSTALL_DIR")" ]]; then
     echo -e "${CYAN}Requesting sudo to create ${INSTALL_DIR}${RESET}"
-    sudo mkdir -p "$INSTALL_DIR"
+    sudo -S mkdir -p "$INSTALL_DIR" < /dev/tty
 else
     mkdir -p "$INSTALL_DIR"
 fi
@@ -99,8 +99,8 @@ EOF
 
 if [[ ! -w "$(dirname "$WRAPPER_PATH")" ]]; then
     echo -e "${CYAN}Requesting sudo to write wrapper to ${WRAPPER_PATH}${RESET}"
-    wrapper_body | sudo tee "$WRAPPER_PATH" >/dev/null
-    sudo chmod +x "$WRAPPER_PATH"
+    wrapper_body | sudo -S tee "$WRAPPER_PATH" >/dev/null < /dev/tty
+    sudo -S chmod +x "$WRAPPER_PATH" < /dev/tty
 else
     wrapper_body > "$WRAPPER_PATH"
     chmod +x "$WRAPPER_PATH"
