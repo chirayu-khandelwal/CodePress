@@ -11,11 +11,12 @@
 # ------------------------------------------------------------
 
 # ── Self-bootstrap: if piped, download and re-run ────────────────────────
-if [[ "${BASH_SOURCE[0]}" == "bash" ]] || [[ ! -f "${BASH_SOURCE[0]}" ]]; then
+if [[ ! -t 0 ]]; then
     SCRIPT=$(mktemp /tmp/codepress-install.XXXXXX.sh)
     curl -fsSL https://raw.githubusercontent.com/chirayu-khandelwal/CodePress/main/install.sh -o "$SCRIPT"
     chmod +x "$SCRIPT"
-    bash "$SCRIPT" "$@" < /dev/tty
+    exec 0</dev/tty
+    bash "$SCRIPT" "$@"
     EXIT=$?
     rm -f "$SCRIPT"
     exit $EXIT
@@ -43,7 +44,7 @@ echo -e "${GREEN}🔧 Installing CodePress to ${INSTALL_DIR}${RESET}"
 # Ensure we have privileges to write to INSTALL_DIR
 if [[ ! -w "$(dirname "$INSTALL_DIR")" ]]; then
     echo -e "${CYAN}Requesting sudo to create ${INSTALL_DIR}${RESET}"
-    sudo -S mkdir -p "$INSTALL_DIR" < /dev/tty
+    sudo mkdir -p "$INSTALL_DIR"
 else
     mkdir -p "$INSTALL_DIR"
 fi
@@ -99,8 +100,8 @@ EOF
 
 if [[ ! -w "$(dirname "$WRAPPER_PATH")" ]]; then
     echo -e "${CYAN}Requesting sudo to write wrapper to ${WRAPPER_PATH}${RESET}"
-    wrapper_body | sudo -S tee "$WRAPPER_PATH" >/dev/null < /dev/tty
-    sudo -S chmod +x "$WRAPPER_PATH" < /dev/tty
+    wrapper_body | sudo tee "$WRAPPER_PATH" >/dev/null
+    sudo chmod +x "$WRAPPER_PATH"
 else
     wrapper_body > "$WRAPPER_PATH"
     chmod +x "$WRAPPER_PATH"
