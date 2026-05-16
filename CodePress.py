@@ -6,50 +6,27 @@
 #     "pyperclip",
 # ]
 # ///
+"""CodePress — compress a codebase into a single AI-ready text file."""
 
+from __future__ import annotations
+
+import logging
 import os
 import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Iterator
 
 import click
 import pyfiglet
 import pyperclip
 
+logger = logging.getLogger("codepress")
 
-# ── Banner ────────────────────────────────────────────────────────────────
+# ── Constants ────────────────────────────────────────────────────────────
 
-def print_banner() -> None:
-    """Print a styled CodePress banner or a simple fallback."""
-    try:
-        ascii_art = pyfiglet.figlet_format("CodePress", font="slant")
-        visible = [line for line in ascii_art.splitlines() if line.strip()]
-        width = click.get_terminal_size().columns
-        reset = "\033[0m"
-        colors = ["\033[1;38;5;81m", "\033[1;38;5;75m", "\033[1;38;5;69m", "\033[1;38;5;63m"]
-        border = "\033[1;38;5;39m"
-
-        print(f'\n{border}{"═" * width}{reset}')
-        for i, line in enumerate(visible):
-            color = colors[i % len(colors)]
-            print(f"{border}║{color} {line[:width - 5]:<{width - 6}}{reset}{border}║{reset}")
-        print(f'{border}{"◆" * min(40, width - 4):^{width - 4}}{reset}')
-        taglines = [
-            "Press your codebase into an AI-ready prompt",
-            "Works with ChatGPT, Claude, Qwen, and more",
-        ]
-        for tag in taglines:
-            print(f'{border}║{tag:^{width - 4}}║{reset}')
-        print(f'{border}{"═" * width}{reset}\n')
-    except Exception:
-        click.echo("⚡ CodePress — Codebase → AI-Ready Prompt\n")
-
-
-# ── Constants ─────────────────────────────────────────────────────────────
-
-IGNORED_DIRECTORIES = frozenset({
+IGNORED_DIRS: frozenset[str] = frozenset({
     ".git", ".svn", ".hg",
     "node_modules", "vendor", "packages", "deps",
     "lib", "gems", "bundle", "Pods", "Carthage",
@@ -60,7 +37,7 @@ IGNORED_DIRECTORIES = frozenset({
     ".next", ".nuxt", ".svelte-kit",
 })
 
-SUPPORTED_EXTENSIONS = frozenset({
+SUPPORTED_EXTS: frozenset[str] = frozenset({
     "py", "cpp", "c", "h", "hpp", "java", "js", "ts", "jsx", "tsx",
     "cs", "go", "rs", "rb", "php", "swift", "kt", "kts", "scala",
     "pl", "pm", "lua", "r", "dart", "html", "htm", "css", "scss",
@@ -92,132 +69,69 @@ Due to context limits, the code is compressed by removing newlines and tabs when
 """
 
 
-# ── Data types ────────────────────────────────────────────────────────────
+# ── Data types ───────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class FileEntry:
+    """A single file discovered during collection."""
+    abs_path: Path
+    rel_path: Path
+
 
 @dataclass
 class FileSet:
     """Result of collecting files from a project directory."""
-    included: list[str] = field(default_factory=list)
-    skipped_dirs: list[str] = field(default_factory=list)
-    skipped_files: list[str] = field(default_factory=list)
+    included: list[FileEntry] = field(default_factory=list)
+    skipped_dirs: list[Path] = field(default_factory=list)
+    skipped_files: list[Path] = field(default_factory=list)
 
     @property
     def total_files(self) -> int:
         return len(self.included)
 
 
-@dataclass
+@dataclass(frozen=True)
 class ProcessResult:
     """Result of processing a codebase."""
-    output_path: str
+    output_path: Path
     file_set: FileSet
     size_kb: float
     estimated_tokens: int
 
 
-# ── File Collector ────────────────────────────────────────────────────────
+# ── Banner ───────────────────────────────────────────────────────────────
 
-class FileCollector:
-    """Walk a directory once, apply all filters, return a clean FileSet."""
+def print_banner() -> None:
+    """Print a styled CodePress banner or a simple fallback."""
+    try:
+        ascii_art = pyfiglet.figlet_format("CodePress", font="slant")
+        visible = [line for line in ascii_art.splitlines() if line.strip()]
+        width = click.get_terminal_size().columns
+        reset = "\033[0m"
+        colors = ["\033[1;38;5;81m", "\033[1;38;5;75m", "\033[1;38;5;69m", "\033[1;38;5;63m"]
+        border = "\033[1;38;5;39m"
 
-    def __init__(
-        self,
-        root: str,
-        extra_extensions: frozenset[str] = frozenset(),
-        ignored_dirs: frozenset[str] = frozenset(),
-        ignored_files: frozenset[str] = frozenset(),
-        forced_files: list[str] | None = None,
-    ):
-        self.root = os.path.abspath(root)
-        self.extensions = SUPPORTED_EXTENSIONS | extra_extensions
-        self.ignored_dirs = IGNORED_DIRECTORIES | ignored_dirs
-        self.ignored_files = {os.path.abspath(f) for f in ignored_files}
-        self.forced_files = [os.path.abspath(f) for f in (forced_files or [])]
-
-    def collect(self) -> FileSet:
-        result = FileSet()
-
-        for dirpath, dirnames, filenames in os.walk(self.root, topdown=True):
-            # Prune ignored directories in-place so os.walk skips them
-            pruned = []
-            for d in dirnames:
-                if d in self.ignored_dirs:
-                    result.skipped_dirs.append(os.path.join(dirpath, d))
-                else:
-                    pruned.append(d)
-            dirnames[:] = pruned
-
-            for fname in filenames:
-                fpath = os.path.join(dirpath, fname)
-                abs_path = os.path.abspath(fpath)
-
-                if abs_path in self.ignored_files:
-                    result.skipped_files.append(fpath)
-                    continue
-
-                ext = Path(fname).suffix.lstrip(".").lower()
-                if ext in self.extensions:
-                    result.included.append(abs_path)
-
-        # Add forced files that weren't already collected
-        for fpath in self.forced_files:
-            if fpath not in result.included and os.path.isfile(fpath):
-                result.included.append(fpath)
-
-        return result
+        print(f'\n{border}{"═" * width}{reset}')
+        for i, line in enumerate(visible):
+            color = colors[i % len(colors)]
+            print(f"{border}║{color} {line[:width - 5]:<{width - 6}}{reset}{border}║{reset}")
+        print(f'{border}{"◆" * min(40, width - 4):^{width - 4}}{reset}')
+        for tag in [
+            "Press your codebase into an AI-ready prompt",
+            "Works with ChatGPT, Claude, Qwen, and more",
+        ]:
+            print(f'{border}║{tag:^{width - 4}}║{reset}')
+        print(f'{border}{"═" * width}{reset}\n')
+    except Exception:
+        click.echo("⚡ CodePress — Codebase → AI-Ready Prompt\n")
 
 
-# ── Output Formatter ──────────────────────────────────────────────────────
+# ── Directory tree ───────────────────────────────────────────────────────
 
-class OutputFormatter:
-    """Build the consolidated output file with a begin/add/end interface."""
-
-    def __init__(self, output_path: str, project_root: str):
-        self.output_path = output_path
-        self.project_root = project_root
-        self._file = None
-
-    def begin(self, directory_tree: str) -> None:
-        """Write the header with AI prompt and project structure."""
-        self._file = open(self.output_path, "w", encoding="utf-8")
-        self._file.write(f"{AI_PROMPT}project : {self.project_root}\n\n")
-        self._file.write("PROJECT STRUCTURE:\n")
-        self._file.write("-" * 40 + "\n")
-        self._file.write(directory_tree)
-        self._file.write("\n" + "=" * 80 + "\n")
-        self._file.write("FILE CONTENTS:\n")
-        self._file.write("=" * 80 + "\n")
-
-    def add_file(self, relative_path: str, content: str) -> None:
-        """Append a single file's content."""
-        self._file.write(f"\n{'-' * 60}\n")
-        self._file.write(f"📁 File: {relative_path}\n")
-        self._file.write(f"{'-' * 60}\n")
-        self._file.write(f"## File content:\n{content}\n")
-
-    def end(self) -> str:
-        """Close the file, compress whitespace, return the output path."""
-        self._file.close()
-        self._compress()
-        return self.output_path
-
-    def _compress(self) -> None:
-        """Remove newlines and reduce consecutive tabs to save tokens."""
-        with open(self.output_path, "r", encoding="utf-8") as f:
-            content = f.read()
-        content = content.replace("\n", "")
-        content = re.sub(r"\t{2,}", "\t", content)
-        with open(self.output_path, "w", encoding="utf-8") as f:
-            f.write(content)
-
-
-# ── Directory Tree ────────────────────────────────────────────────────────
-
-def generate_tree(root: str, ignored_dirs: frozenset[str]) -> str:
+def generate_tree(root: Path, ignored_dirs: frozenset[str]) -> str:
     """Generate an ASCII tree of the directory structure."""
-    root_path = Path(root)
-    if not root_path.is_dir():
-        return f"{root_path} is not a directory\n"
+    if not root.is_dir():
+        return f"{root} is not a directory\n"
 
     lines: list[str] = []
 
@@ -239,61 +153,172 @@ def generate_tree(root: str, ignored_dirs: frozenset[str]) -> str:
                 extension = "    " if is_last else "│   "
                 _walk(entry, prefix + extension)
 
-    _walk(root_path)
+    _walk(root)
     return "\n".join(lines) + "\n" if lines else ""
 
 
-# ── Processor ─────────────────────────────────────────────────────────────
+# ── File collector ───────────────────────────────────────────────────────
+
+class FileCollector:
+    """Walk a directory once, apply all filters, return a clean FileSet."""
+
+    def __init__(
+        self,
+        root: Path,
+        extra_extensions: frozenset[str] = frozenset(),
+        ignored_dirs: frozenset[str] = frozenset(),
+        ignored_files: frozenset[Path] = frozenset(),
+        forced_files: list[Path] | None = None,
+    ):
+        self.root = root.resolve()
+        self.extensions = SUPPORTED_EXTS | extra_extensions
+        self.ignored_dirs = IGNORED_DIRS | ignored_dirs
+        self.ignored_files = {f.resolve() for f in ignored_files}
+        self.forced_files = [f.resolve() for f in (forced_files or [])]
+
+    def collect(self) -> FileSet:
+        """Collect all matching files under root."""
+        result = FileSet()
+
+        for dirpath, dirnames, filenames in os.walk(self.root, topdown=True):
+            base = Path(dirpath)
+
+            # Prune ignored directories in-place
+            pruned = []
+            for d in dirnames:
+                if d in self.ignored_dirs:
+                    result.skipped_dirs.append(base / d)
+                else:
+                    pruned.append(d)
+            dirnames[:] = pruned
+
+            for fname in filenames:
+                fpath = base / fname
+                abs_path = fpath.resolve()
+
+                if abs_path in self.ignored_files:
+                    result.skipped_files.append(fpath)
+                    continue
+
+                ext = fpath.suffix.lstrip(".").lower()
+                if ext in self.extensions:
+                    result.included.append(FileEntry(
+                        abs_path=abs_path,
+                        rel_path=fpath.relative_to(self.root),
+                    ))
+
+        # Add forced files not already collected
+        collected = {e.abs_path for e in result.included}
+        for fpath in self.forced_files:
+            if fpath not in collected and fpath.is_file():
+                result.included.append(FileEntry(
+                    abs_path=fpath,
+                    rel_path=fpath.relative_to(self.root) if fpath.is_relative_to(self.root) else fpath.name,
+                ))
+
+        return result
+
+
+# ── Output formatter ─────────────────────────────────────────────────────
+
+class OutputFormatter:
+    """Build the consolidated output file with begin/add/end interface."""
+
+    SEPARATOR = "-" * 60
+    SECTION_DIV = "=" * 80
+
+    def __init__(self, output_path: Path, project_root: Path):
+        self.output_path = output_path
+        self.project_root = project_root
+        self._file = None
+
+    def begin(self, directory_tree: str) -> None:
+        """Write the header with AI prompt and project structure."""
+        self._file = open(self.output_path, "w", encoding="utf-8")
+        self._file.write(f"{AI_PROMPT}project : {self.project_root}\n\n")
+        self._file.write("PROJECT STRUCTURE:\n")
+        self._file.write(self.SEPARATOR + "\n")
+        self._file.write(directory_tree)
+        self._file.write("\n" + self.SECTION_DIV + "\n")
+        self._file.write("FILE CONTENTS:\n")
+        self._file.write(self.SECTION_DIV + "\n")
+
+    def add_file(self, entry: FileEntry, content: str) -> None:
+        """Append a single file's content."""
+        self._file.write(f"\n{self.SEPARATOR}\n")
+        self._file.write(f"📁 File: {entry.rel_path}\n")
+        self._file.write(f"{self.SEPARATOR}\n")
+        self._file.write(f"## File content:\n{content}\n")
+
+    def end(self) -> Path:
+        """Close, compress, return output path."""
+        self._file.close()
+        self._compress()
+        return self.output_path
+
+    def _compress(self) -> None:
+        """Remove newlines and reduce consecutive tabs."""
+        content = self.output_path.read_text(encoding="utf-8")
+        content = content.replace("\n", "")
+        content = re.sub(r"\t{2,}", "\t", content)
+        self.output_path.write_text(content, encoding="utf-8")
+
+
+# ── Processor ────────────────────────────────────────────────────────────
 
 class CodebaseProcessor:
     """Orchestrate collection, formatting, and compression of a codebase."""
 
     def __init__(
         self,
-        source_directory: str,
+        source_directory: Path,
         extra_extensions: list[str] | None = None,
         ignored_dirs: list[str] | None = None,
         ignored_files: list[str] | None = None,
         forced_files: list[str] | None = None,
         output_file: str | None = None,
     ):
-        self.source_directory = os.path.abspath(source_directory)
-        self.output_path = os.path.abspath(output_file) if output_file else f"{self.source_directory}_codebase.txt"
+        self.source_directory = source_directory.resolve()
+        self.output_path = Path(output_file).resolve() if output_file else self.source_directory.parent / f"{self.source_directory.name}_codebase.txt"
 
         extra_ext = frozenset(e.lstrip(".").lower() for e in (extra_extensions or []))
         ignored_dir_set = frozenset(Path(d).name for d in (ignored_dirs or []))
-        ignored_file_set = frozenset(ignored_files or [])
+        ignored_file_set = frozenset(
+            (self.source_directory / f).resolve() for f in (ignored_files or [])
+        )
+        forced = [
+            (self.source_directory / f).resolve() if not Path(f).is_absolute() else Path(f).resolve()
+            for f in (forced_files or [])
+        ]
 
         self.collector = FileCollector(
             root=self.source_directory,
             extra_extensions=extra_ext,
             ignored_dirs=ignored_dir_set,
             ignored_files=ignored_file_set,
-            forced_files=forced_files,
+            forced_files=forced,
         )
 
     def process(self) -> ProcessResult:
+        """Run the full pipeline: collect → format → compress."""
         file_set = self.collector.collect()
         tree = generate_tree(self.source_directory, self.collector.ignored_dirs)
 
         formatter = OutputFormatter(self.output_path, self.source_directory)
         formatter.begin(tree)
 
-        for abs_path in file_set.included:
-            rel_path = os.path.relpath(abs_path, self.source_directory)
+        for entry in file_set.included:
             try:
-                with open(abs_path, "r", encoding="utf-8", errors="ignore") as f:
-                    content = f.read()
+                content = entry.abs_path.read_text(encoding="utf-8", errors="ignore")
             except Exception as e:
-                click.echo(click.style(f"  ⚠️  Could not read {rel_path}: {e}", fg="yellow"))
+                click.echo(click.style(f"  ⚠️  Could not read {entry.rel_path}: {e}", fg="yellow"))
                 continue
-            formatter.add_file(rel_path, content)
+            formatter.add_file(entry, content)
 
         formatter.end()
 
-        size_kb = os.path.getsize(self.output_path) / 1024
-        with open(self.output_path, "r", encoding="utf-8") as f:
-            estimated_tokens = len(f.read()) // 4
+        size_kb = self.output_path.stat().st_size / 1024
+        estimated_tokens = len(self.output_path.read_text(encoding="utf-8")) // 4
 
         return ProcessResult(
             output_path=self.output_path,
@@ -303,7 +328,7 @@ class CodebaseProcessor:
         )
 
 
-# ── CLI ───────────────────────────────────────────────────────────────────
+# ── CLI ──────────────────────────────────────────────────────────────────
 
 @click.command(
     context_settings=dict(help_option_names=["-h", "--help"]),
@@ -347,12 +372,12 @@ NOTES:
     • Use --copy to get a ready-to-paste prompt for AI tools
 """,
 )
-@click.argument("directory", type=click.Path(exists=True, file_okay=False, dir_okay=True), metavar="PROJECT_DIR")
+@click.argument("directory", type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path), metavar="PROJECT_DIR")
 @click.option("-e", "--extra-extensions", multiple=True, metavar="EXT", help="Additional file extensions (without dot).")
 @click.option("-i", "--ignore", multiple=True, metavar="FILE", help="Exclude specific files.")
 @click.option("--ignore-dir", "--ignore-directory", "ignore_directory", multiple=True, metavar="DIR", help="Exclude directories.")
 @click.option("-f", "--add-files", multiple=True, metavar="FILE", help="Force-include specific files.")
-@click.option("-o", "--output", type=click.Path(), metavar="FILENAME", help="Custom output filename.")
+@click.option("-o", "--output", type=click.Path(path_type=Path), metavar="FILENAME", help="Custom output filename.")
 @click.option("-c", "--copy", is_flag=True, help="Copy output to clipboard as an AI-ready prompt.")
 def cli(directory, extra_extensions, ignore, ignore_directory, add_files, output, copy):
     """Transform your entire codebase into a single, AI-friendly text file."""
@@ -363,7 +388,7 @@ def cli(directory, extra_extensions, ignore, ignore_directory, add_files, output
         ignored_dirs=list(ignore_directory),
         ignored_files=list(ignore),
         forced_files=list(add_files),
-        output_file=output,
+        output_file=str(output) if output else None,
     )
 
     result = processor.process()
@@ -379,8 +404,7 @@ def cli(directory, extra_extensions, ignore, ignore_directory, add_files, output
     click.echo(click.style(f"  Estimated tokens: {result.estimated_tokens:,}", fg="magenta"))
 
     if copy:
-        with open(result.output_path, "r", encoding="utf-8") as f:
-            text = f.read()
+        text = result.output_path.read_text(encoding="utf-8")
         pyperclip.copy(text + "\n\nQuery: [provide your query]")
         click.echo(click.style("\n✓ Copied to clipboard!", fg="cyan"))
 
