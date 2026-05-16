@@ -15,7 +15,7 @@ if [[ "${BASH_SOURCE[0]}" == "bash" ]] || [[ ! -f "${BASH_SOURCE[0]}" ]]; then
     SCRIPT=$(mktemp /tmp/codepress-install.XXXXXX.sh)
     curl -fsSL https://raw.githubusercontent.com/chirayu-khandelwal/CodePress/main/install.sh -o "$SCRIPT"
     chmod +x "$SCRIPT"
-    bash "$SCRIPT" "$@"
+    bash "$SCRIPT" "$@" < /dev/tty
     EXIT=$?
     rm -f "$SCRIPT"
     exit $EXIT
